@@ -123,8 +123,9 @@ interface DebuggerCommand {
 }
 
 // This interface should always match the schema found in `package.json`.
-interface LaunchRequestArguments extends DebugProtocol.LaunchRequestArguments {
-	program: string;
+interface RequestArguments extends DebugProtocol.LaunchRequestArguments, DebugProtocol.AttachRequestArguments {
+	program?: string;
+	processId?: number;
 	stopOnEntry?: boolean;
 	args?: string[];
 	showLog?: boolean;
@@ -169,6 +170,9 @@ function logError(...args: any[]) {
 }
 
 function normalizePath(filePath: string) {
+	if (!filePath) {
+		return
+	}
 	if (process.platform === 'win32') {
 		filePath = path.normalize(filePath);
 		let i = filePath.indexOf(':');
@@ -189,34 +193,36 @@ class Delve {
 	onclose: (code: number) => void;
 	noDebug: boolean;
 
-	constructor(remotePath: string, port: number, host: string, program: string, launchArgs: LaunchRequestArguments) {
+	constructor(remotePath: string, port: number, host: string, program: string, mode: string, launchArgs: RequestArguments) {
 		this.program = normalizePath(program);
 		this.remotePath = remotePath;
-		let mode = launchArgs.mode;
-		let dlvCwd = dirname(program);
+		let dlvCwd = '.';
 		let isProgramDirectory = false;
 		let launchArgsEnv = launchArgs.env || {};
 		this.connection = new Promise((resolve, reject) => {
 			// Validations on the program
-			if (!program) {
+			if (mode !== 'attach' && !program) {
 				return reject('The program attribute is missing in the debug configuration in launch.json');
 			}
-			try {
-				let pstats = lstatSync(program);
-				if (pstats.isDirectory()) {
-					if (mode === 'exec') {
-						logError(`The program "${program}" must not be a directory in exec mode`);
-						return reject('The program attribute must be an executable in exec mode');
+			if (program) {
+				dlvCwd = dirname(program);
+				try {
+					let pstats = lstatSync(program);
+					if (pstats.isDirectory()) {
+						if (mode === 'exec' || mode === 'attach') {
+							logError(`The program "${program}" must not be a directory in ${mode} mode`);
+							return reject('The program attribute must be an executable in exec or attach mode');
+						}
+						dlvCwd = program;
+						isProgramDirectory = true;
+					} else if (mode !== 'exec' && mode !== 'attach' && extname(program) !== '.go') {
+						logError(`The program "${program}" must be a valid go file in debug mode`);
+						return reject('The program attribute must be a directory or .go file in debug mode');
 					}
-					dlvCwd = program;
-					isProgramDirectory = true;
-				} else if (mode !== 'exec' && extname(program) !== '.go') {
-					logError(`The program "${program}" must be a valid go file in debug mode`);
-					return reject('The program attribute must be a directory or .go file in debug mode');
+				} catch (e) {
+					logError(`The program "${program}" does not exist: ${e}`);
+					return reject('The program attribute must point to a valid directory, .go file or executable.');
 				}
-			} catch (e) {
-				logError(`The program "${program}" does not exist: ${e}`);
-				return reject('The program attribute must point to valid directory, .go file or executable.');
 			}
 
 			// read env from disk and merge into env variables
@@ -229,10 +235,10 @@ class Delve {
 
 			let env = Object.assign({}, process.env, fileEnv, launchArgsEnv);
 
-			let dirname = isProgramDirectory ? program : path.dirname(program);
 			if (!env['GOPATH'] && (mode === 'debug' || mode === 'test')) {
 				// If no GOPATH is set, then infer it from the file/package path
-				// Not applicable to exec mode in which case `program` need not point to source code under GOPATH
+				// Not applicable to exec and attach mode in which case `program` need not point to source code under GOPATH
+				let dirname = isProgramDirectory ? program : path.dirname(program);
 				env['GOPATH'] = getInferredGopath(dirname) || env['GOPATH'];
 			}
 
@@ -278,12 +284,19 @@ class Delve {
 				return reject(`Cannot find Delve debugger. Install from https://github.com/derekparker/delve & ensure it is in your "GOPATH/bin" or "PATH".`);
 			}
 
-			let currentGOWorkspace = getCurrentGoWorkspaceFromGOPATH(env['GOPATH'], dirname);
 			let dlvArgs = [mode || 'debug'];
-			if (mode === 'exec') {
-				dlvArgs = dlvArgs.concat([program]);
-			} else if (currentGOWorkspace) {
-				dlvArgs = dlvArgs.concat([dirname.substr(currentGOWorkspace.length + 1)]);
+			if (mode === 'exec' || mode === 'attach') {
+				if (launchArgs.processId)
+					dlvArgs = dlvArgs.concat([launchArgs.processId.toString()]);
+				if (program) {
+					dlvArgs = dlvArgs.concat([program]);
+				}
+			} else {
+				let dirname = isProgramDirectory ? program : path.dirname(program);
+				let currentGOWorkspace = getCurrentGoWorkspaceFromGOPATH(env['GOPATH'], dirname);
+				if (currentGOWorkspace) {
+					dlvArgs = dlvArgs.concat([dirname.substr(currentGOWorkspace.length + 1)]);
+				}
 			}
 			dlvArgs = dlvArgs.concat(['--headless=true', '--listen=' + host + ':' + port.toString()]);
 			if (launchArgs.showLog) {
@@ -395,8 +408,7 @@ class GoDebugSession extends DebugSession {
 	private delve: Delve;
 	private localPathSeparator: string;
 	private remotePathSeparator: string;
-
-	private launchArgs: LaunchRequestArguments;
+	private stopOnEntry: boolean;
 
 	public constructor(debuggerLinesStartAt1: boolean, isServer: boolean = false) {
 		super(debuggerLinesStartAt1, isServer);
@@ -405,7 +417,7 @@ class GoDebugSession extends DebugSession {
 		this.debugState = null;
 		this.delve = null;
 		this.breakpoints = new Map<string, DebugBreakpoint[]>();
-
+		this.stopOnEntry = false;
 		const logPath = path.join(os.tmpdir(), 'vscode-go-debug.txt');
 		logger.init(e => this.sendEvent(e), logPath, isServer);
 	}
@@ -423,23 +435,14 @@ class GoDebugSession extends DebugSession {
 		return path.includes('/') ? '/' : '\\';
 	}
 
-	protected launchRequest(response: DebugProtocol.LaunchResponse, args: LaunchRequestArguments): void {
-		this.launchArgs = args;
-		const logLevel = args.trace === 'verbose' ?
-			logger.LogLevel.Verbose :
-			args.trace ? logger.LogLevel.Log :
-				logger.LogLevel.Error;
-		logger.setMinLogLevel(logLevel);
-
+	protected launchRequest(response: DebugProtocol.LaunchResponse, args: RequestArguments): void {
 		if (!args.program) {
 			this.sendErrorResponse(response, 3000, 'Failed to continue: The program attribute is missing in the debug configuration in launch.json');
 			return;
 		}
 
-		// Launch the Delve debugger on the program
 		let localPath = args.program;
 		let remotePath = args.remotePath || '';
-		let port = args.port || random(2000, 50000);
 		let host = args.host || '127.0.0.1';
 
 		if (remotePath.length > 0) {
@@ -459,7 +462,27 @@ class GoDebugSession extends DebugSession {
 			}
 		}
 
-		this.delve = new Delve(remotePath, port, host, localPath, args);
+		this.startDelve(remotePath, host, localPath, args.mode, args, response);
+	}
+
+	protected attachRequest(response: DebugProtocol.AttachResponse, args: RequestArguments): void {
+		if (!args.processId) {
+			this.sendErrorResponse(response, 3000, 'Failed to continue: The process id is missing in the debug configuration in launch.json');
+			return;
+		}
+		this.startDelve('', '127.0.0.1', args.program, 'attach', args, response);
+	}
+
+	private startDelve(remotePath: string, host: string, localPath: string, mode: string, args: RequestArguments, response: DebugProtocol.Response) {
+		this.stopOnEntry = args.stopOnEntry;
+		const logLevel = args.trace === 'verbose' ?
+			logger.LogLevel.Verbose :
+			args.trace ? logger.LogLevel.Log :
+				logger.LogLevel.Error;
+		logger.setMinLogLevel(logLevel);
+
+		let port = args.port || random(2000, 50000);
+		this.delve = new Delve('', port, host, localPath, mode, args);
 		this.delve.onstdout = (str: string) => {
 			this.sendEvent(new OutputEvent(str, 'stdout'));
 		};
@@ -475,7 +498,6 @@ class GoDebugSession extends DebugSession {
 			}
 			verbose('Delve is closed');
 		};
-
 		this.delve.connection.then(() => {
 			if (!this.delve.noDebug) {
 				this.sendEvent(new InitializedEvent());
@@ -498,7 +520,7 @@ class GoDebugSession extends DebugSession {
 	protected configurationDoneRequest(response: DebugProtocol.ConfigurationDoneResponse, args: DebugProtocol.ConfigurationDoneArguments): void {
 		verbose('ConfigurationDoneRequest');
 
-		if (this.launchArgs.stopOnEntry) {
+		if (this.stopOnEntry) {
 			this.sendEvent(new StoppedEvent('breakpoint', 0));
 			verbose('StoppedEvent("breakpoint")');
 			this.sendResponse(response);

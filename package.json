@@ -286,9 +286,91 @@
                 "${2:MyTestFunction}"
               ]
             }
+          },
+          {
+            "label": "Go: Attach to process",
+            "description": "Open process picker to select a process to attach to",
+            "body": {
+              "name": "${3:Attach to process}",
+              "type": "go",
+              "request": "attach",
+              "processId": "^\"\\${command:pickProcess}\""
+            }
           }
         ],
+        "variables": {
+          "pickProcess": "extension.pickNativeProcess"
+        },
         "configurationAttributes": {
+          "attach": {
+            "required": ["processId"],
+            "properties": {
+              "processId": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "description": "Process id to attach the debugger to. Use \"${command:pickProcesss}\" to get a list of local running processes to attach to. Note that some platforms require administrator privileges in order to attach to a process.",
+                    "default": "${command:pickProcess}"
+                  },
+                  {
+                    "type": "integer",
+                    "description": "Process id to attach the debugger to. Use \"${command:pickProcesss}\" to get a list of local running processes to attach to. Note that some platforms require administrator privileges in order to attach to a process."
+                  }
+                    ]
+              },
+              "program": {
+                "type": "string",
+                "description": "Optional path to the pre-built binary file to debug.",
+                "default": ""
+              },
+              "stopOnEntry": {
+                "type": "boolean",
+                "description": "Automatically stop program after launch.",
+                "default": false
+              },
+              "showLog": {
+                "type": "boolean",
+                "description": "Show log output from the delve debugger.",
+                "default": false
+              },
+              "cwd": {
+                "type": "string",
+                "description": "Workspace relative or absolute path to the working directory of the program being debugged. Default is the current workspace.",
+                "default": "."
+              },
+              "init": {
+                "type": "string",
+                "description": "Init file, executed by the terminal client.",
+                "default": ""
+              },
+              "port": {
+                "type": "number",
+                "description": "The port that the delve debugger will be listening on.",
+                "default": 2345
+              },
+              "trace": {
+                "type": [
+                  "boolean",
+                  "string"
+                ],
+                "enum": [
+                  "verbose",
+                  true
+                ],
+                "default": true,
+                "description": "When 'true', the extension will log diagnostic info to a file. When 'verbose', it will also show logs in the console."
+              },
+              "backend": {
+                "type": "string",
+                "enum": [
+                  "default",
+                  "native",
+                  "lldb"
+                ],
+                "description": "Backend used by delve. Only available in delve version 0.12.2 and above."
+              }
+            }
+          },
           "launch": {
             "required": [],
             "properties": {

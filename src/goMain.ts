@@ -45,6 +45,7 @@ import { lintCode } from './goLint';
 import { vetCode } from './goVet';
 import { buildCode } from './goBuild';
 import { installCurrentPackage } from './goInstall';
+import { pickProcess } from './goProcessPicker';
 
 export let errorDiagnosticCollection: vscode.DiagnosticCollection;
 export let warningDiagnosticCollection: vscode.DiagnosticCollection;
@@ -306,6 +307,8 @@ export function activate(ctx: vscode.ExtensionContext): void {
 	ctx.subscriptions.push(vscode.commands.registerCommand('go.build.workspace', () => buildCode(true)));
 
 	ctx.subscriptions.push(vscode.commands.registerCommand('go.install.package', installCurrentPackage));
+
+	ctx.subscriptions.push(vscode.commands.registerCommand('go.pickprocess', () => pickProcess()));
 
 	vscode.languages.setLanguageConfiguration(GO_MODE.language, {
 		indentationRules: {

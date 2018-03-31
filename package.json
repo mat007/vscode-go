@@ -294,12 +294,12 @@
               "name": "${3:Attach to process}",
               "type": "go",
               "request": "attach",
-              "processId": "^\"\\${command:pickProcess}\""
+              "processId": "^\"\\${go:pickprocess}\""
             }
           }
         ],
         "variables": {
-          "pickProcess": "extension.pickNativeProcess"
+          "pickProcess": "go.pickprocess"
         },
         "configurationAttributes": {
           "attach": {
@@ -310,7 +310,7 @@
                   {
                     "type": "string",
                     "description": "Process id to attach the debugger to. Use \"${command:pickProcesss}\" to get a list of local running processes to attach to. Note that some platforms require administrator privileges in order to attach to a process.",
-                    "default": "${command:pickProcess}"
+                    "default": "${go:pickprocess}"
                   },
                   {
                     "type": "integer",
